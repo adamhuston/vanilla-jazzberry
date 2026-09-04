@@ -1,0 +1,6 @@
+[submodule "bot"]
+	path = bot
+	url = https://github.com/adamhuston/jazzy.git
+[submodule "sim"]
+	path = sim
+	url = https://github.com/adamhuston/pisaiah.git

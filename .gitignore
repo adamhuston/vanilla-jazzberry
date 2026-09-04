@@ -1,0 +1,57 @@
+# Project-local working context
+context/
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+!.env.template
+
+# ROS 2 / colcon workspaces
+build/
+install/
+log/
+.colcon/
+
+# CMake and compiler artifacts
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+CTestTestfile.cmake
+cmake_install.cmake
+compile_commands.json
+Makefile
+Testing/
+
+# Python caches, environments, and package metadata
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Isaac Sim and project-generated runtime output
+custom_sim/cache/
+custom_sim/generated/
+custom_sim/logs/
+custom_sim/output/
+**/rover.usd
+
+# Logs and local runtime state
+*.log
+*.pid
+
+# Editor and operating system files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
