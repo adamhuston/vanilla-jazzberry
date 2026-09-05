@@ -1,0 +1,180 @@
+# Vanilla Jazzberry - Safety Czar policy
+#
+# Deterministic command-governance policy. Physical facts are NOT duplicated
+# here; they are sourced from robot_hardware.yaml. This file defines authority,
+# limits, sensor roles, and the safety-critical checks the probe must pass
+# before the vehicle is allowed to move.
+#
+# Three-tier authority:
+#   hard_limits       - protected; the brain can never change these
+#   operating_profiles - deployment-selectable envelopes
+#   runtime_envelope   - Czar-calculated from live sensor confidence
+# The brain may PROPOSE within the envelope; it may never REDEFINE safety.
+
+schema_version: 1
+document_status: design_baseline_corrected
+config_name: vanilla_jazzberry_safety
+
+hardware_source: robot_hardware.yaml
+
+authority:
+  brain_may_propose:
+    - target_linear_velocity
+    - target_angular_velocity
+    - target_clearance_margin
+    - target_confidence_threshold
+  brain_may_not_change:
+    - hard_limits
+    - sensor_policy
+    - collision_policy
+    - lifecycle_policy
+  principle: uncertainty_reduces_authority_never_increases_it
+
+vehicle:
+  command_model: differential_drive_twist
+  actuated_axes: [linear_x, angular_z]
+  lateral_velocity_supported: false
+
+hard_limits:
+  # All sourced from robot_hardware.yaml measured_capabilities. Until those are
+  # bench-tested they are null and the Czar must refuse motion (fail-safe).
+  max_linear_velocity_mps: from_hardware_measured_capability   # pending_test
+  max_angular_velocity_radps: from_hardware_measured_capability # pending_test
+  min_actuation_velocity_mps: from_hardware_measured_capability # pending_test
+  emergency_stop_latency_ms: 100
+  command_timeout_ms: 300                # stale command -> stop
+  braking_model: from_hardware_test      # pending_test
+
+operating_profiles:
+  active: test_low_speed
+  profiles:
+    test_low_speed:
+      linear_velocity_scale: 0.25
+      angular_velocity_scale: 0.25
+      min_clearance_m: 0.40
+    indoor_slow:
+      linear_velocity_scale: 0.50
+      angular_velocity_scale: 0.50
+      min_clearance_m: 0.35
+    normal:
+      linear_velocity_scale: 1.00
+      angular_velocity_scale: 1.00
+      min_clearance_m: 0.30
+
+runtime_envelope:
+  computed_by: safety_czar
+  inputs: [sensor_confidence, profile_scale, hard_limits]
+  never_exceeds: hard_limits
+
+sensor_policy:
+  lidar:
+    role: collision_critical
+    on_loss: stop                        # primary obstacle sensor
+    max_staleness_ms: 250
+    source_topic: /scan
+  camera_primary:
+    role: navigation_critical
+    on_loss: degrade                     # slow, do not necessarily stop
+    max_staleness_ms: 500
+    source_topic: /camera/image_raw
+  camera_secondary:
+    role: advisory
+    on_loss: ignore
+    concurrent_with_primary: false       # single CSI port on Pi 3B+
+  crash_sensor:
+    role: emergency_backstop
+    on_trigger: safe_stop
+    latch: true                          # requires explicit clear
+    source_topic: /crash
+  accelerometer:                         # CORRECTED: was treated as an IMU
+    model: adxl345
+    role: motion_plausibility
+    provides: [linear_acceleration, tilt_roll_pitch]
+    does_not_provide: [yaw, angular_velocity, heading]
+    on_implausible_motion: degrade
+    note: >-
+      Accelerometer-only. Cannot detect yaw or provide heading. Use for
+      impact/tip detection and gross motion-vs-command plausibility only;
+      never as an orientation or turn-rate source.
+    source_topic: /imu/accel
+  ultrasonic:
+    role: advisory
+    enabled: false
+  drivetrain_odometry:
+    role: motion_critical
+    on_loss: stop
+    source_topic: /odom
+    available: pending_verification
+
+collision_policy:
+  zones:
+    forward_slowdown_m: 1.00
+    forward_stop_m: 0.40
+    side_clearance_m: 0.30
+    rear_stop_m: 0.35
+  reference_sensor: lidar
+  fallback_on_lidar_loss: stop
+
+brain_proposal:
+  input_topic: /rov2_core/cmd_vel_proposed
+  approved_output_topic: /rov2_core/cmd_vel
+  reject_if:
+    - exceeds_runtime_envelope
+    - stale_beyond_command_timeout
+    - sensor_confidence_below_threshold
+
+lifecycle_policy:
+  motion_allowed_states: [active]
+  on_deactivate: safe_stop
+  on_error: safe_stop_and_latch
+  require_probe_pass_before_activate: true
+
+diagnostics:
+  publish_status_topic: /safety_czar/status
+  heartbeat_hz: 10
+
+# --------------------------------------------------------------------------- #
+# Safety-critical probe plan. These are the checks that must pass before the
+# Czar will permit activation. Run with probe_hw.py against this file.
+# --------------------------------------------------------------------------- #
+probe:
+  schema_version: 1
+  config_name: vanilla_jazzberry_safety
+  mode: verify
+  checks:
+    - id: safety_lidar_present
+      type: usb_device
+      required: true
+      severity: error
+      usb_ids: ["10c4:ea60"]
+      note: Collision-critical sensor must be present (RPLIDAR A1 / CP2102)
+
+    - id: safety_lidar_serial
+      type: serial_port
+      required: true
+      severity: error
+      match_usb_ids: ["10c4:ea60"]
+
+    - id: safety_motor_controller_present
+      type: usb_device
+      required: true
+      severity: error
+      usb_ids: ["1a86:7523"]
+      note: No approved-command actuation path without the motor controller
+
+    - id: safety_accelerometer_identity
+      type: i2c_devid
+      required: false
+      severity: warning
+      bus: auto
+      address: "0x53"
+      register: "0x00"
+      expected_value: "0xe5"
+      note: Plausibility sensor; degraded-mode input only
+
+    - id: safety_hardware_contract_present
+      type: file_present
+      required: true
+      severity: error
+      path: robot_hardware.yaml
+      note: Safety limits are sourced from the hardware contract

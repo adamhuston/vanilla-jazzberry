@@ -1,0 +1,268 @@
+# Vanilla Jazzberry - authoritative hardware contract
+#
+# Machine-readable, corrected replacement for context/robot_hardware_params.md.
+# Physical facts live here; the Safety Czar derives limits from this file.
+# 2-space indentation, valid YAML.
+#
+# Two kinds of values:
+#   - datasheet_*  : known from the component datasheet (trustworthy now)
+#   - measured_*   : requires physical assembly / bench test (null = pending)
+# Anything genuinely unknowable before assembly is null with a `pending_*` note.
+
+schema_version: 1
+document_status: design_baseline_corrected
+config_name: vanilla_jazzberry_hardware
+
+robot:
+  name: vanilla_jazzberry
+  class: four_wheel_skid_steer_rover
+  body_command_model: differential_drive_twist   # linear.x + angular.z only
+  actuator_command_model: four_wheel_skid_steer
+  lateral_velocity_supported: false
+
+  wheel_layout:
+    drive: all_wheel                # all four wheels powered
+    axle_groups:
+      front: [front_left, front_right]
+      rear: [rear_left, rear_right]
+    steering: skid                  # differential; no steered axle
+
+  geometry:
+    # Unmeasurable until the chassis is physically assembled. Do not invent.
+    wheel_radius_m: null            # pending_measurement
+    wheel_base_m: null              # pending_measurement (front-rear axle distance)
+    track_width_m: null             # pending_measurement (left-right wheel distance)
+    ground_clearance_m: null        # pending_measurement
+    mass_kg: null                   # pending_measurement
+
+hardware:
+  compute:
+    model: raspberry_pi_3_model_b_plus
+    soc: bcm2837b0
+    cpu: cortex_a53_quad_1_4ghz
+    ram_mb: 1024
+    camera_ports:
+      csi2: 1                       # ONE camera port: two CSI cameras need a mux
+    analog_inputs: 0                # no ADC on-board; analog sensors need external ADC
+
+  power:
+    drive_battery:
+      type: lithium_ion_2s          # external RC battery
+      chemistry: li_ion
+      capacity_mah: 2200
+      nominal_v: 7.4
+      full_v: 8.4
+      empty_v: 6.0
+      warn_v: 6.8
+      critical_v: 6.3
+      telemetry_source: yahboom_board   # read via Rosmaster_Lib.get_battery_voltage
+    ups:
+      model: pisugar_s_plus
+      variant: hardware_only            # the "dumb" S Plus
+      battery_telemetry_available: false   # CORRECTED: no server, no telemetry
+      role: pi_power_backup
+
+  motor_controller:
+    model: yahboom_yb_erf01
+    mcu: stm32f103rct6
+    usb_bridge: ch340
+    usb_id: "1a86:7523"
+    device_hint: /dev/ttyUSB0
+    baud_datasheet: 115200
+    driver_library: rosmaster_lib
+    driver_installed: false           # observed: Rosmaster_Lib not installed
+    protocol: pending_verification    # unconfirmed until library/board respond
+    capabilities:
+      motor_count: 4
+      encoder_feedback: pending_verification
+      battery_voltage_readback: pending_verification
+      pwm_control: pending_verification
+
+  actuators:
+    drive_motors:
+      count: 4
+      type: dc_gear_motor_with_encoder
+      encoder:
+        present: true
+        counts_per_rev: null          # pending_verification (needs datasheet/bench)
+        direction_convention: pending_verification
+    measured_capabilities:
+      max_linear_speed_mps: null      # pending_test
+      max_angular_speed_radps: null   # pending_test
+      min_actuation_speed_mps: null   # pending_test (deadband)
+      braking_distance_m: null        # pending_test
+      braking_model: pending_test
+
+  sensors:
+    lidar:
+      model: slamtec_rplidar_a1       # A1M8
+      role: collision_critical
+      interface: usb_serial
+      usb_bridge: cp2102              # CORRECTED: CP2102, not CH340
+      usb_id: "10c4:ea60"
+      device_hint: /dev/ttyUSB1
+      baud_datasheet: 115200
+      datasheet_range_m: [0.15, 12.0]
+      datasheet_scan_hz: 5.5          # adjustable ~2-10 Hz
+      datasheet_sample_rate_hz: 8000
+      datasheet_angular_resolution_deg: 1.0
+      measured_confirmed: false       # confirm at runtime with the driver
+      ros:
+        topic: /scan
+        frame_id: lidar_link
+        message_type: sensor_msgs/msg/LaserScan
+
+    accelerometer:                    # CORRECTED: was mislabeled "imu"
+      model: adxl345
+      role: motion_plausibility
+      interface: i2c
+      i2c_address: "0x53"             # 0x1d if ALT ADDRESS pin is high
+      i2c_devid_register: "0x00"
+      i2c_devid_value: "0xe5"         # positive identity check
+      axes: 3
+      gyroscope: false                # NO gyro: cannot measure yaw rate / heading
+      magnetometer: false
+      provides:
+        linear_acceleration: true
+        tilt_roll_pitch: true         # derived from gravity vector when static
+        yaw: false                    # not observable from accel alone
+        angular_velocity: false
+      ros:
+        topic: /imu/accel
+        frame_id: imu_link
+        message_type: sensor_msgs/msg/Imu
+        # ROS convention for an accel-only source: mark unavailable fields with
+        # orientation_covariance[0] = -1 and angular_velocity_covariance[0] = -1.
+        angular_velocity_available: false
+        orientation_available: partial_tilt_only
+
+    crash_sensor:
+      model: digital_bump_switch
+      role: emergency_backstop
+      interface: gpio
+      gpio_pin: pending_wiring         # pin unknown until wired; not probeable yet
+      active_state: pending_wiring
+      ros:
+        topic: /crash
+        frame_id: base_link
+        message_type: std_msgs/msg/Bool
+
+    ultrasonic:
+      model: hc_sr04_class
+      role: advisory
+      enabled: false                   # optional; disabled by default
+      interface: gpio
+      ros:
+        topic: /ultrasonic/range
+        message_type: sensor_msgs/msg/Range
+
+    camera_primary:
+      model: raspberry_pi_camera_module_3   # Sony IMX708, autofocus
+      role: navigation_critical
+      interface: csi2
+      driver: libcamera
+      ros:
+        topic: /camera/image_raw
+        frame_id: camera_link
+        message_type: sensor_msgs/msg/Image
+
+    camera_secondary:
+      model: raspberry_pi_hq_camera_m12     # Sony IMX477
+      role: advisory
+      interface: csi2
+      simultaneous_with_primary: false      # Pi 3B+ has ONE CSI port; needs a mux
+      note: >-
+        Cannot run alongside camera_primary on a Pi 3B+ without a CSI
+        multiplexer. Treat as swap-in or mux-gated, not concurrent.
+
+  interfaces:
+    required_topics:
+      command_proposed: /rov2_core/cmd_vel_proposed
+      command_approved: /rov2_core/cmd_vel
+    odometry:
+      source: wheel_encoders
+      topic: /odom
+      available: pending_verification
+
+# --------------------------------------------------------------------------- #
+# Probe plan consumed by probe_hw.py. Read-only checks only.
+# --------------------------------------------------------------------------- #
+probe:
+  schema_version: 1
+  config_name: vanilla_jazzberry_hardware
+  mode: discover
+  checks:
+    - id: compute_identity
+      type: host_identity
+      required: true
+      severity: error
+      expected: raspberry_pi_3_model_b_plus
+
+    - id: motor_controller_usb
+      type: usb_device
+      required: true
+      severity: error
+      usb_ids: ["1a86:7523"]
+      note: Yahboom YB-ERF01 via CH340
+
+    - id: motor_controller_serial
+      type: serial_port
+      required: true
+      severity: error
+      match_usb_ids: ["1a86:7523"]
+
+    - id: lidar_usb
+      type: usb_device
+      required: true
+      severity: error
+      usb_ids: ["10c4:ea60"]
+      note: RPLIDAR A1 via CP2102
+
+    - id: lidar_serial
+      type: serial_port
+      required: true
+      severity: error
+      match_usb_ids: ["10c4:ea60"]
+
+    - id: i2c_tools_present
+      type: command_available
+      required: false
+      severity: warning
+      command: i2cdetect
+
+    - id: accelerometer_presence
+      type: i2c_device
+      required: false
+      severity: warning
+      bus: auto
+      address: "0x53"
+
+    - id: accelerometer_identity
+      type: i2c_devid
+      required: false
+      severity: warning
+      bus: auto
+      address: "0x53"
+      register: "0x00"
+      expected_value: "0xe5"
+      note: ADXL345 DEVID confirms it is an accelerometer (no gyro)
+
+    - id: camera_primary
+      type: camera
+      required: false
+      severity: warning
+      note: Pi 3B+ has one CSI port; primary and HQ cameras cannot run together
+
+    - id: pisugar_ups
+      type: pisugar
+      required: false
+      severity: info
+      expect_telemetry: false
+      note: PiSugar S Plus is hardware-only; absence of a server is expected
+
+    - id: rosmaster_lib
+      type: python_module
+      required: false
+      severity: info
+      module: Rosmaster_Lib
+      note: Needed for motor control and Yahboom battery voltage readback
