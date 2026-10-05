@@ -57,4 +57,7 @@ custom_sim/output/
 Thumbs.db
 
 
+# Yahboom vendor archive + its extracted folder (large; keep out of git)
 E15_ROS_Expansion_Board-20261004T222348Z-1-001/
+E15_ROS_Expansion_Board-20261004T222348Z-1-001.zip
+*.zip
