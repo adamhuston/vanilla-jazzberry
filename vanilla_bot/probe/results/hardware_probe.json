@@ -1,0 +1,353 @@
+{
+  "schema_version": 1,
+  "probe": {
+    "script_version": "0.1.0",
+    "timestamp_utc": "2026-10-04T23:54:44.339372+00:00",
+    "input_config": "/home/batsat/vanilla_probe/robot_hardware.yaml",
+    "config_name": "vanilla_jazzberry_hardware",
+    "mode": "discover"
+  },
+  "host": {
+    "model": "Raspberry Pi 3 Model B Plus Rev 1.4",
+    "kernel": "Linux batsat 6.18.39+rpt-rpi-v7 #1 SMP Raspbian 1:6.18.39-1+rpt1 (2026-07-29) armv7l GNU/Linux",
+    "architecture": "armv7l"
+  },
+  "checks": [
+    {
+      "id": "compute_identity",
+      "type": "host_identity",
+      "required": true,
+      "severity": "error",
+      "expected": "raspberry_pi_3_model_b_plus",
+      "observed": "Raspberry Pi 3 Model B Plus Rev 1.4",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "id": "motor_controller_usb",
+      "type": "usb_device",
+      "required": true,
+      "severity": "error",
+      "expected": [
+        "1a86:7523"
+      ],
+      "observed": [
+        "1a86:7523"
+      ],
+      "status": "pass",
+      "detail": "CH340 UART (Yahboom / STM32 boards)",
+      "note": "Yahboom YB-ERF01 via CH340"
+    },
+    {
+      "id": "motor_controller_serial",
+      "type": "serial_port",
+      "required": true,
+      "severity": "error",
+      "expected": [
+        "1a86:7523"
+      ],
+      "observed": [
+        {
+          "device": "/dev/ttyUSB0",
+          "readable": true,
+          "usb_id": "1a86:7523"
+        }
+      ],
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "id": "lidar_usb",
+      "type": "usb_device",
+      "required": true,
+      "severity": "error",
+      "expected": [
+        "10c4:ea60"
+      ],
+      "observed": [
+        "10c4:ea60"
+      ],
+      "status": "pass",
+      "detail": "CP2102 UART (Slamtec RPLIDAR A1)",
+      "note": "RPLIDAR A1 via CP2102"
+    },
+    {
+      "id": "lidar_serial",
+      "type": "serial_port",
+      "required": true,
+      "severity": "error",
+      "expected": [
+        "10c4:ea60"
+      ],
+      "observed": [
+        {
+          "device": "/dev/ttyUSB1",
+          "readable": true,
+          "usb_id": "10c4:ea60"
+        }
+      ],
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "id": "i2c_tools_present",
+      "type": "command_available",
+      "required": false,
+      "severity": "warning",
+      "expected": "i2cdetect",
+      "observed": "/usr/sbin/i2cdetect",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "id": "safety_accelerometer_presence",
+      "type": "i2c_device",
+      "required": false,
+      "severity": "warning",
+      "expected": "0x53",
+      "observed": {
+        "bus": 3,
+        "address": "0x53"
+      },
+      "status": "pass",
+      "detail": "",
+      "note": "ADXL345 on software I2C bus 3 (GPIO23/24); hw I2C-1/GPIO3 was damaged, see accelerometer_safety"
+    },
+    {
+      "id": "safety_accelerometer_identity",
+      "type": "i2c_devid",
+      "required": false,
+      "severity": "warning",
+      "expected": "0xe5",
+      "observed": {
+        "bus": 3,
+        "address": "0x53",
+        "register": "0x00",
+        "value": "0xe5"
+      },
+      "status": "pass",
+      "detail": "device id confirmed",
+      "note": "ADXL345 DEVID confirms the safety accel (no gyro; navigation uses the onboard IMU)"
+    },
+    {
+      "id": "camera_primary",
+      "type": "camera",
+      "required": false,
+      "severity": "warning",
+      "expected": null,
+      "observed": [
+        "Available cameras",
+        "-----------------",
+        "0 : imx708 [4608x2592 10-bit RGGB] (/base/soc/i2c0mux/i2c@1/imx708@1a)",
+        "    Modes: 'SRGGB10_CSI2P' : 1536x864 [120.13 fps - (768, 432)/3072x1728 crop]",
+        "                             2304x1296 [56.03 fps - (0, 0)/4608x2592 crop]",
+        "                             4608x2592 [14.35 fps - (0, 0)/4608x2592 crop]"
+      ],
+      "status": "pass",
+      "detail": "rpicam-hello",
+      "note": "Pi 3B+ has one CSI port; primary and HQ cameras cannot run together"
+    },
+    {
+      "id": "pisugar_ups",
+      "type": "pisugar",
+      "required": false,
+      "severity": "info",
+      "expected": null,
+      "observed": {
+        "i2c": [
+          "0x53",
+          "0x50",
+          "0x64",
+          "0x50",
+          "0x64"
+        ]
+      },
+      "status": "pending",
+      "detail": "no telemetry expected (PiSugar S Plus is hardware-only)",
+      "note": "PiSugar S Plus is hardware-only; absence of a server is expected"
+    },
+    {
+      "id": "rosmaster_lib",
+      "type": "python_module",
+      "required": false,
+      "severity": "info",
+      "expected": "Rosmaster_Lib",
+      "observed": "Rosmaster_Lib",
+      "status": "pass",
+      "detail": "importable",
+      "note": "Gates motor control, Yahboom battery readback, and the onboard 9-axis navigation IMU"
+    },
+    {
+      "id": "motor_board_responsive",
+      "type": "rosmaster_board",
+      "required": false,
+      "severity": "warning",
+      "expected": null,
+      "observed": {
+        "port": "/dev/ttyUSB0",
+        "firmware_version": 3.6
+      },
+      "status": "pass",
+      "detail": "board responded to telemetry",
+      "note": "Confirms the Yahboom/STM32 board answers over serial via Rosmaster_Lib (no motion issued)"
+    },
+    {
+      "id": "navigation_imu_active",
+      "type": "rosmaster_imu",
+      "required": false,
+      "severity": "warning",
+      "expected": null,
+      "observed": {
+        "accel": [
+          0.02,
+          -0.189,
+          -9.971
+        ],
+        "gyro": [
+          0.015,
+          0.006,
+          0.005
+        ],
+        "mag": [
+          -12.437,
+          -2.999,
+          24.3
+        ]
+      },
+      "status": "pass",
+      "detail": "onboard 9-axis IMU reporting",
+      "note": "Reads the Yahboom onboard 9-axis IMU over serial (navigation only; excluded from safety)"
+    },
+    {
+      "id": "drive_encoders_active",
+      "type": "rosmaster_encoders",
+      "required": false,
+      "severity": "warning",
+      "expected": 4,
+      "observed": {
+        "encoders": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "count": 4
+      },
+      "status": "pass",
+      "detail": "4 encoder channels readable (spin wheels to confirm counts change)",
+      "note": "Confirms 4 wheel-encoder channels report; spin wheels to confirm counts change"
+    },
+    {
+      "id": "battery_voltage_active",
+      "type": "rosmaster_battery",
+      "required": false,
+      "severity": "warning",
+      "expected": null,
+      "observed": {
+        "voltage": 7.5
+      },
+      "status": "pass",
+      "detail": "battery 7.50V",
+      "note": "Reads pack voltage over serial (2S Li-ion nominal; wide bounds to avoid false alarms)"
+    },
+    {
+      "id": "lidar_health_active",
+      "type": "rplidar_health",
+      "required": false,
+      "severity": "warning",
+      "expected": null,
+      "observed": {
+        "port": "/dev/ttyUSB1",
+        "health": {
+          "status": "good",
+          "error_code": 0
+        },
+        "info": {
+          "model": 24,
+          "firmware": "1.29",
+          "hardware": 7,
+          "serial": "76f2fa92c3e49ec6a5eb9af3e02f5566"
+        }
+      },
+      "status": "pass",
+      "detail": "RPLIDAR healthy",
+      "note": "Queries RPLIDAR GET_HEALTH/GET_INFO; keeps the scan motor stopped (read-only)"
+    },
+    {
+      "id": "stable_serial_symlink",
+      "type": "file_present",
+      "required": false,
+      "severity": "info",
+      "expected": "/dev/myserial",
+      "observed": "/dev/myserial",
+      "status": "pass",
+      "detail": "",
+      "note": "Yahboom udev symlink for a stable board port; ttyUSB ordering is not guaranteed across reboots"
+    },
+    {
+      "id": "power_integrity",
+      "type": "host_throttling",
+      "required": false,
+      "severity": "warning",
+      "expected": "0x0",
+      "observed": {
+        "raw": "0x0",
+        "now": {
+          "under_voltage": false,
+          "arm_freq_capped": false,
+          "throttled": false,
+          "soft_temp_limit": false
+        },
+        "since_boot": {
+          "under_voltage": false,
+          "arm_freq_capped": false,
+          "throttled": false,
+          "soft_temp_limit": false
+        },
+        "soc_temp": "50.5'C"
+      },
+      "status": "pass",
+      "detail": "no throttling",
+      "note": "vcgencmd undervoltage/thermal throttling - a top cause of brownouts under motor load"
+    },
+    {
+      "id": "rootfs_free_space",
+      "type": "disk_space",
+      "required": false,
+      "severity": "info",
+      "expected": "/",
+      "observed": {
+        "path": "/",
+        "free_gb": 21.53,
+        "total_gb": 30.09,
+        "percent_free": 71.5
+      },
+      "status": "pass",
+      "detail": "",
+      "note": "Low SD-card space crashes logging; warn before it bites"
+    },
+    {
+      "id": "crash_sensor_gpio",
+      "type": "gpio_input",
+      "required": false,
+      "severity": "info",
+      "expected": null,
+      "observed": {
+        "gpio_pin": "pending_wiring"
+      },
+      "status": "not_tested",
+      "detail": "GPIO pin not yet wired/configured (passive switch is not auto-detectable)",
+      "note": "Passive bump switch is not auto-detectable; reads level only once a pin is configured"
+    }
+  ],
+  "summary": {
+    "total": 20,
+    "by_status": {
+      "pass": 18,
+      "pending": 1,
+      "not_tested": 1
+    },
+    "required_failures": 0,
+    "deployment_ready": true
+  }
+}

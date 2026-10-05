@@ -77,6 +77,7 @@ hardware:
       encoder_feedback: pending_verification
       battery_voltage_readback: pending_verification
       pwm_control: pending_verification
+      onboard_imu: yahboom_onboard_9axis   # 9-axis IMU lives on this board (see sensors.imu_navigation)
 
   actuators:
     drive_motors:
@@ -112,10 +113,21 @@ hardware:
         frame_id: lidar_link
         message_type: sensor_msgs/msg/LaserScan
 
-    accelerometer:                    # CORRECTED: was mislabeled "imu"
+    # SEPARATION OF CONCERN: two inertial sensors, deliberately not shared.
+    #   accelerometer_safety (ADXL345, direct I2C) -> Safety Czar only
+    #   imu_navigation (Yahboom onboard 9-axis, via serial) -> navigation only
+    accelerometer_safety:             # ADXL345 - dedicated Safety Czar sensor
       model: adxl345
-      role: motion_plausibility
-      interface: i2c
+      role: safety_motion_evidence
+      consumer: safety_czar           # safety only; navigation must not depend on it
+      interface: i2c                  # direct I2C: independent of the motor controller
+      independent_of: motor_controller  # keeps working if the Yahboom/serial link dies
+      i2c_bus: 3                      # software I2C (i2c-gpio) on GPIO23=SDA/GPIO24=SCL (pins 16/18)
+      i2c_bus_note: >-
+        Hardware I2C-1 (GPIO2/GPIO3, pins 3/5) was damaged during bring-up: GPIO3/SCL
+        is stuck low. Relocated to a bit-banged i2c-gpio bus via
+        'dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=23,i2c_gpio_scl=24' in config.txt.
+        On the ADXL345 breakout, CS is tied to 3.3V (I2C mode) and SDO to GND (addr 0x53).
       i2c_address: "0x53"             # 0x1d if ALT ADDRESS pin is high
       i2c_devid_register: "0x00"
       i2c_devid_value: "0xe5"         # positive identity check
@@ -123,18 +135,40 @@ hardware:
       gyroscope: false                # NO gyro: cannot measure yaw rate / heading
       magnetometer: false
       provides:
-        linear_acceleration: true
+        linear_acceleration: true     # impact / tip / motion-vs-command plausibility
         tilt_roll_pitch: true         # derived from gravity vector when static
         yaw: false                    # not observable from accel alone
         angular_velocity: false
       ros:
-        topic: /imu/accel
-        frame_id: imu_link
+        topic: /safety/accel
+        frame_id: safety_accel_link
         message_type: sensor_msgs/msg/Imu
-        # ROS convention for an accel-only source: mark unavailable fields with
-        # orientation_covariance[0] = -1 and angular_velocity_covariance[0] = -1.
+        # accel-only source: orientation_covariance[0] = -1 and
+        # angular_velocity_covariance[0] = -1 by ROS convention.
         angular_velocity_available: false
         orientation_available: partial_tilt_only
+
+    imu_navigation:                   # 9-axis IMU integrated on the Yahboom board
+      model: yahboom_onboard_9axis    # ICM20948 or MPU9250; confirm chip on assembly
+      role: navigation_attitude
+      consumer: navigation            # navigation only; NOT a Safety Czar input
+      interface: serial_via_motor_controller  # read over CH340 -> STM32 firmware
+      access_library: rosmaster_lib
+      shares_failure_domain_with: motor_controller  # why it is not trusted for safety
+      axes: 9
+      gyroscope: true
+      accelerometer: true
+      magnetometer: true
+      provides:
+        linear_acceleration: true
+        angular_velocity: true        # yaw rate available (unlike the ADXL345)
+        orientation: true             # fused roll/pitch/yaw
+      driver_installed: false         # pending: Rosmaster_Lib not installed
+      identity_confirmed: false       # confirm chip + serial protocol on assembly
+      ros:
+        topic: /imu/data
+        frame_id: imu_link
+        message_type: sensor_msgs/msg/Imu
 
     crash_sensor:
       model: digital_bump_switch
@@ -230,22 +264,23 @@ probe:
       severity: warning
       command: i2cdetect
 
-    - id: accelerometer_presence
+    - id: safety_accelerometer_presence
       type: i2c_device
       required: false
       severity: warning
-      bus: auto
+      bus: 3
       address: "0x53"
+      note: ADXL345 on software I2C bus 3 (GPIO23/24); hw I2C-1/GPIO3 was damaged, see accelerometer_safety
 
-    - id: accelerometer_identity
+    - id: safety_accelerometer_identity
       type: i2c_devid
       required: false
       severity: warning
-      bus: auto
+      bus: 3
       address: "0x53"
       register: "0x00"
       expected_value: "0xe5"
-      note: ADXL345 DEVID confirms it is an accelerometer (no gyro)
+      note: ADXL345 DEVID confirms the safety accel (no gyro; navigation uses the onboard IMU)
 
     - id: camera_primary
       type: camera
@@ -265,4 +300,72 @@ probe:
       required: false
       severity: info
       module: Rosmaster_Lib
-      note: Needed for motor control and Yahboom battery voltage readback
+      note: Gates motor control, Yahboom battery readback, and the onboard 9-axis navigation IMU
+
+    # ----------------------------------------------------------------------- #
+    # Active checks: open the device read-only and confirm it RESPONDS (not
+    # just that it enumerates). These never actuate the vehicle. They degrade
+    # to 'unavailable' when the board/LIDAR is off or silent.
+    # ----------------------------------------------------------------------- #
+    - id: motor_board_responsive
+      type: rosmaster_board
+      required: false
+      severity: warning
+      match_usb_ids: ["1a86:7523"]
+      note: Confirms the Yahboom/STM32 board answers over serial via Rosmaster_Lib (no motion issued)
+
+    - id: navigation_imu_active
+      type: rosmaster_imu
+      required: false
+      severity: warning
+      note: Reads the Yahboom onboard 9-axis IMU over serial (navigation only; excluded from safety)
+
+    - id: drive_encoders_active
+      type: rosmaster_encoders
+      required: false
+      severity: warning
+      expected_count: 4
+      note: Confirms 4 wheel-encoder channels report; spin wheels to confirm counts change
+
+    - id: battery_voltage_active
+      type: rosmaster_battery
+      required: false
+      severity: warning
+      min_voltage: 5.5
+      max_voltage: 13.0
+      note: Reads pack voltage over serial (2S Li-ion nominal; wide bounds to avoid false alarms)
+
+    - id: lidar_health_active
+      type: rplidar_health
+      required: false
+      severity: warning
+      match_usb_ids: ["10c4:ea60"]
+      note: Queries RPLIDAR GET_HEALTH/GET_INFO; keeps the scan motor stopped (read-only)
+
+    - id: stable_serial_symlink
+      type: file_present
+      required: false
+      severity: info
+      path: /dev/myserial
+      note: Yahboom udev symlink for a stable board port; ttyUSB ordering is not guaranteed across reboots
+
+    - id: power_integrity
+      type: host_throttling
+      required: false
+      severity: warning
+      note: vcgencmd undervoltage/thermal throttling - a top cause of brownouts under motor load
+
+    - id: rootfs_free_space
+      type: disk_space
+      required: false
+      severity: info
+      path: /
+      min_free_gb: 1.0
+      note: Low SD-card space crashes logging; warn before it bites
+
+    - id: crash_sensor_gpio
+      type: gpio_input
+      required: false
+      severity: info
+      gpio_pin: pending_wiring      # set to the BCM pin number once wired; active_high/pull then apply
+      note: Passive bump switch is not auto-detectable; reads level only once a pin is configured

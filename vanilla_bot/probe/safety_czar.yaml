@@ -86,17 +86,32 @@ sensor_policy:
     on_trigger: safe_stop
     latch: true                          # requires explicit clear
     source_topic: /crash
-  accelerometer:                         # CORRECTED: was treated as an IMU
+  accelerometer_safety:                  # ADXL345 - the Czar's OWN inertial sensor
     model: adxl345
-    role: motion_plausibility
+    role: safety_motion_evidence
+    interface: i2c                       # direct I2C, independent of the motor controller
+    independent_of: motor_controller     # survives a Yahboom/serial failure
     provides: [linear_acceleration, tilt_roll_pitch]
     does_not_provide: [yaw, angular_velocity, heading]
     on_implausible_motion: degrade
     note: >-
-      Accelerometer-only. Cannot detect yaw or provide heading. Use for
-      impact/tip detection and gross motion-vs-command plausibility only;
-      never as an orientation or turn-rate source.
-    source_topic: /imu/accel
+      Accelerometer-only, and deliberately NOT the navigation IMU. Chosen for
+      failure independence: it keeps reporting impact/tip/motion-plausibility
+      even if the Yahboom board or its serial link dies. Use for impact/tip
+      detection and gross motion-vs-command plausibility only; never as an
+      orientation or turn-rate source.
+    source_topic: /safety/accel
+  navigation_imu:                        # Yahboom onboard 9-axis - NOT a Czar input
+    model: yahboom_onboard_9axis
+    role: navigation_attitude
+    consumer: navigation
+    excluded_from_safety: true           # shares a failure domain with the actuators
+    reason: >-
+      Read over the CH340/STM32 path that also drives the motors, so a motor
+      controller fault would blind safety and actuation together. The Czar
+      relies on accelerometer_safety instead. Listed here only to document
+      that this sensor is intentionally not trusted for safety decisions.
+    source_topic: /imu/data
   ultrasonic:
     role: advisory
     enabled: false
@@ -164,13 +179,13 @@ probe:
 
     - id: safety_accelerometer_identity
       type: i2c_devid
-      required: false
-      severity: warning
-      bus: auto
+      required: true
+      severity: error
+      bus: 3
       address: "0x53"
       register: "0x00"
       expected_value: "0xe5"
-      note: Plausibility sensor; degraded-mode input only
+      note: The Czar's dedicated, motor-controller-independent inertial sensor (ADXL345) on software I2C bus 3
 
     - id: safety_hardware_contract_present
       type: file_present
@@ -178,3 +193,29 @@ probe:
       severity: error
       path: robot_hardware.yaml
       note: Safety limits are sourced from the hardware contract
+
+    # ----------------------------------------------------------------------- #
+    # Active safety preconditions: a device that enumerates but does not
+    # respond is a safety failure. These open the device read-only and never
+    # command motion.
+    # ----------------------------------------------------------------------- #
+    - id: safety_lidar_responsive
+      type: rplidar_health
+      required: true
+      severity: error
+      match_usb_ids: ["10c4:ea60"]
+      note: Collision-critical LIDAR must answer GET_HEALTH, not merely enumerate (scan motor kept off)
+
+    - id: safety_motor_controller_responsive
+      type: rosmaster_board
+      required: true
+      severity: error
+      match_usb_ids: ["1a86:7523"]
+      note: The stop/actuation path must respond over serial; a silent board cannot be commanded to stop
+
+    - id: safety_crash_sensor
+      type: gpio_input
+      required: false
+      severity: warning
+      gpio_pin: pending_wiring      # emergency backstop; set BCM pin once wired. Passive switch -> level only
+      note: Not-yet-wired; a passive bump switch cannot be presence-verified, only read once wired

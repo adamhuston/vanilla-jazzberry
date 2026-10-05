@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "probe": {
+    "script_version": "0.1.0",
+    "timestamp_utc": "2026-10-04T23:54:46.029526+00:00",
+    "input_config": "/home/batsat/vanilla_probe/safety_czar.yaml",
+    "config_name": "vanilla_jazzberry_safety",
+    "mode": "verify"
+  },
+  "host": {
+    "model": "Raspberry Pi 3 Model B Plus Rev 1.4",
+    "kernel": "Linux batsat 6.18.39+rpt-rpi-v7 #1 SMP Raspbian 1:6.18.39-1+rpt1 (2026-07-29) armv7l GNU/Linux",
+    "architecture": "armv7l"
+  },
+  "checks": [
+    {
+      "id": "safety_lidar_present",
+      "type": "usb_device",
+      "required": true,
+      "severity": "error",
+      "expected": [
+        "10c4:ea60"
+      ],
+      "observed": [
+        "10c4:ea60"
+      ],
+      "status": "pass",
+      "detail": "CP2102 UART (Slamtec RPLIDAR A1)",
+      "note": "Collision-critical sensor must be present (RPLIDAR A1 / CP2102)"
+    },
+    {
+      "id": "safety_lidar_serial",
+      "type": "serial_port",
+      "required": true,
+      "severity": "error",
+      "expected": [
+        "10c4:ea60"
+      ],
+      "observed": [
+        {
+          "device": "/dev/ttyUSB1",
+          "readable": true,
+          "usb_id": "10c4:ea60"
+        }
+      ],
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "id": "safety_motor_controller_present",
+      "type": "usb_device",
+      "required": true,
+      "severity": "error",
+      "expected": [
+        "1a86:7523"
+      ],
+      "observed": [
+        "1a86:7523"
+      ],
+      "status": "pass",
+      "detail": "CH340 UART (Yahboom / STM32 boards)",
+      "note": "No approved-command actuation path without the motor controller"
+    },
+    {
+      "id": "safety_accelerometer_identity",
+      "type": "i2c_devid",
+      "required": true,
+      "severity": "error",
+      "expected": "0xe5",
+      "observed": {
+        "bus": 3,
+        "address": "0x53",
+        "register": "0x00",
+        "value": "0xe5"
+      },
+      "status": "pass",
+      "detail": "device id confirmed",
+      "note": "The Czar's dedicated, motor-controller-independent inertial sensor (ADXL345) on software I2C bus 3"
+    },
+    {
+      "id": "safety_hardware_contract_present",
+      "type": "file_present",
+      "required": true,
+      "severity": "error",
+      "expected": "robot_hardware.yaml",
+      "observed": "/home/batsat/vanilla_probe/robot_hardware.yaml",
+      "status": "pass",
+      "detail": "",
+      "note": "Safety limits are sourced from the hardware contract"
+    },
+    {
+      "id": "safety_lidar_responsive",
+      "type": "rplidar_health",
+      "required": true,
+      "severity": "error",
+      "expected": null,
+      "observed": {
+        "port": "/dev/ttyUSB1",
+        "health": {
+          "status": "good",
+          "error_code": 0
+        },
+        "info": {
+          "model": 24,
+          "firmware": "1.29",
+          "hardware": 7,
+          "serial": "76f2fa92c3e49ec6a5eb9af3e02f5566"
+        }
+      },
+      "status": "pass",
+      "detail": "RPLIDAR healthy",
+      "note": "Collision-critical LIDAR must answer GET_HEALTH, not merely enumerate (scan motor kept off)"
+    },
+    {
+      "id": "safety_motor_controller_responsive",
+      "type": "rosmaster_board",
+      "required": true,
+      "severity": "error",
+      "expected": null,
+      "observed": {
+        "port": "/dev/ttyUSB0",
+        "firmware_version": 3.6
+      },
+      "status": "pass",
+      "detail": "board responded to telemetry",
+      "note": "The stop/actuation path must respond over serial; a silent board cannot be commanded to stop"
+    },
+    {
+      "id": "safety_crash_sensor",
+      "type": "gpio_input",
+      "required": false,
+      "severity": "warning",
+      "expected": null,
+      "observed": {
+        "gpio_pin": "pending_wiring"
+      },
+      "status": "not_tested",
+      "detail": "GPIO pin not yet wired/configured (passive switch is not auto-detectable)",
+      "note": "Not-yet-wired; a passive bump switch cannot be presence-verified, only read once wired"
+    }
+  ],
+  "summary": {
+    "total": 8,
+    "by_status": {
+      "pass": 7,
+      "not_tested": 1
+    },
+    "required_failures": 0,
+    "deployment_ready": true
+  }
+}

@@ -8,6 +8,14 @@ Run this ON THE PI (Raspberry Pi OS / Debian). It is read-only: it lists and
 queries devices and never configures, writes, or moves anything. Motion and
 actuator behavior are deliberately out of scope for this tool.
 
+Some checks are "active": they open a device (the Yahboom board over serial,
+the RPLIDAR over serial) and read live telemetry to confirm the device actually
+responds, not merely that it enumerates. These still NEVER actuate the vehicle:
+they only request read-only telemetry/health. The motor board check reads
+firmware/IMU/encoder/battery telemetry but issues no motion command; the LIDAR
+check reads INFO/HEALTH and keeps the scan motor disabled. Every active check
+degrades to ``unavailable`` (never a crash) when the hardware is off or silent.
+
 Usage:
     python3 probe_hw.py robot_hardware.yaml
     python3 probe_hw.py robot_hardware.yaml --output hardware_probe.json
@@ -17,8 +25,8 @@ The same script accepts either YAML file; each file declares the checks that
 matter to its concern. Run it once per file.
 
 Dependencies: PyYAML (`pip install pyyaml`). Everything else is stdlib. Optional
-host tools (i2c-tools, libcamera, Rosmaster_Lib) are used if present and are
-reported as ``unavailable`` when missing, never fatal.
+host tools (i2c-tools, libcamera, Rosmaster_Lib, pyserial) are used if present
+and are reported as ``unavailable`` when missing, never fatal.
 """
 
 from __future__ import annotations
@@ -32,6 +40,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -364,6 +373,383 @@ def check_file_present(check: dict, ctx: dict) -> dict:
     return make_result(check, MISSING, str(path), "file not found", raw)
 
 
+def check_disk_space(check: dict, ctx: dict) -> dict:
+    path = str(check.get("path", "/"))
+    min_free_gb = check.get("min_free_gb")
+    try:
+        usage = shutil.disk_usage(path)
+    except Exception as exc:
+        return make_result(check, UNAVAILABLE, None, f"disk_usage failed: {exc}", path)
+    free_gb = usage.free / 1e9
+    observed = {
+        "path": path,
+        "free_gb": round(free_gb, 2),
+        "total_gb": round(usage.total / 1e9, 2),
+        "percent_free": round(100.0 * usage.free / usage.total, 1) if usage.total else None,
+    }
+    if min_free_gb is not None and free_gb < float(min_free_gb):
+        return make_result(
+            check, WARNING, observed,
+            f"only {free_gb:.1f} GB free (< {float(min_free_gb):.1f} GB floor)", path,
+        )
+    return make_result(check, PASS, observed, "", path)
+
+
+def check_host_throttling(check: dict, ctx: dict) -> dict:
+    """Read Pi power/thermal throttling state via vcgencmd (read-only)."""
+    rc, out, err = run(["vcgencmd", "get_throttled"])
+    if rc != 0 or "throttled=" not in out:
+        return make_result(check, UNAVAILABLE, None, err or "vcgencmd unavailable")
+    raw = out.split("throttled=", 1)[1].strip()
+    try:
+        bits = int(raw, 16)
+    except ValueError:
+        return make_result(check, UNAVAILABLE, None, f"unparseable value '{raw}'")
+    now_flags = {
+        "under_voltage": bool(bits & 0x1),
+        "arm_freq_capped": bool(bits & 0x2),
+        "throttled": bool(bits & 0x4),
+        "soft_temp_limit": bool(bits & 0x8),
+    }
+    since_boot_flags = {
+        "under_voltage": bool(bits & 0x10000),
+        "arm_freq_capped": bool(bits & 0x20000),
+        "throttled": bool(bits & 0x40000),
+        "soft_temp_limit": bool(bits & 0x80000),
+    }
+    temp_rc, temp_out, _ = run(["vcgencmd", "measure_temp"])
+    temp = temp_out.split("temp=", 1)[1].strip() if temp_rc == 0 and "temp=" in temp_out else None
+    observed = {
+        "raw": raw,
+        "now": now_flags,
+        "since_boot": since_boot_flags,
+        "soc_temp": temp,
+    }
+    if any(now_flags.values()):
+        active = ", ".join(k for k, v in now_flags.items() if v)
+        return make_result(check, UNEXPECTED, observed, f"active power/thermal fault: {active}", "0x0")
+    if any(since_boot_flags.values()):
+        past = ", ".join(k for k, v in since_boot_flags.items() if v)
+        return make_result(check, WARNING, observed, f"occurred since boot: {past}", "0x0")
+    return make_result(check, PASS, observed, "no throttling", "0x0")
+
+
+# --------------------------------------------------------------------------- #
+# Active serial helpers (read-only telemetry; never actuate the vehicle)
+# --------------------------------------------------------------------------- #
+def port_usb_id(port: str) -> str | None:
+    rc, out, _ = run(["udevadm", "info", "--query=property", f"--name={port}"])
+    if rc != 0:
+        return None
+    vid = re.search(r"ID_VENDOR_ID=(\w+)", out)
+    pid = re.search(r"ID_MODEL_ID=(\w+)", out)
+    if vid and pid:
+        return f"{vid.group(1).lower()}:{pid.group(1).lower()}"
+    return None
+
+
+def resolve_serial_port(check: dict, default_ids: list[str]) -> str | None:
+    """Resolve a serial device for an active check, preferring stable matches."""
+    explicit = check.get("port")
+    if explicit:
+        return explicit if os.path.exists(explicit) else None
+    wanted = [str(x).lower() for x in check.get("match_usb_ids", default_ids)]
+    for port in sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")):
+        if port_usb_id(port) in wanted:
+            return port
+    # Fall back to the Yahboom-style stable symlink only if it matches.
+    if os.path.exists("/dev/myserial") and port_usb_id("/dev/myserial") in wanted:
+        return "/dev/myserial"
+    return None
+
+
+def _any_nonzero(seq: Any) -> bool:
+    try:
+        return any(abs(float(x)) > 1e-9 for x in seq)
+    except (TypeError, ValueError):
+        return False
+
+
+def rosmaster_session(ctx: dict, check: dict) -> tuple[Any, dict, str | None]:
+    """Lazily open ONE cached, read-only Rosmaster telemetry session.
+
+    Returns (bot, snapshot, error). The snapshot carries a one-shot read of
+    firmware/IMU/encoder/battery telemetry plus a ``_responsive`` flag. No
+    motion command is ever issued; only telemetry reporting is enabled.
+    """
+    cache = ctx.setdefault("_rosmaster", {})
+    if cache.get("tried"):
+        return cache.get("session"), cache.get("snapshot", {}), cache.get("error")
+    cache["tried"] = True
+
+    try:
+        from Rosmaster_Lib import Rosmaster
+    except Exception as exc:
+        cache["error"] = f"Rosmaster_Lib not importable: {exc}"
+        return None, {}, cache["error"]
+
+    port = resolve_serial_port(check, ["1a86:7523"])
+    if not port:
+        cache["error"] = "motor-controller serial port not found (1a86:7523)"
+        return None, {}, cache["error"]
+    cache["port"] = port
+
+    try:
+        bot = Rosmaster(com=port, debug=False)
+        try:
+            bot.ser.timeout = 1  # bound the reader thread so it never blocks forever
+        except Exception:
+            pass
+        bot.create_receive_threading()
+        try:
+            # Enable read-only telemetry reporting; this does NOT move the robot.
+            bot.set_auto_report_state(True, forever=False)
+        except Exception:
+            pass
+        time.sleep(0.8)  # allow a few telemetry frames to arrive
+    except Exception as exc:
+        cache["error"] = f"could not open board on {port}: {exc}"
+        return None, {}, cache["error"]
+
+    snapshot: dict[str, Any] = {}
+    readers = [
+        ("version", bot.get_version),
+        ("battery_v", bot.get_battery_voltage),
+        ("accel", bot.get_accelerometer_data),
+        ("gyro", bot.get_gyroscope_data),
+        ("mag", bot.get_magnetometer_data),
+        ("encoders", bot.get_motor_encoder),
+        ("motion", bot.get_motion_data),
+    ]
+    for name, fn in readers:
+        try:
+            snapshot[name] = fn()
+        except Exception as exc:
+            snapshot[name] = None
+            snapshot.setdefault("errors", {})[name] = str(exc)
+
+    version = snapshot.get("version")
+    battery = snapshot.get("battery_v")
+    snapshot["_responsive"] = bool(
+        (isinstance(version, (int, float)) and version > 0)
+        or (isinstance(battery, (int, float)) and battery > 0.5)
+        or _any_nonzero(snapshot.get("accel") or [])
+        or _any_nonzero(snapshot.get("gyro") or [])
+        or _any_nonzero(snapshot.get("mag") or [])
+    )
+
+    cache["session"] = bot
+    cache["snapshot"] = snapshot
+    return bot, snapshot, None
+
+
+def check_rosmaster_board(check: dict, ctx: dict) -> dict:
+    """Confirm the Yahboom board actually responds (not just that USB enumerates)."""
+    bot, snap, err = rosmaster_session(ctx, check)
+    if err:
+        return make_result(check, UNAVAILABLE, None, err)
+    port = ctx.get("_rosmaster", {}).get("port")
+    observed = {"port": port, "firmware_version": snap.get("version")}
+    if not snap.get("_responsive"):
+        return make_result(
+            check, UNAVAILABLE, observed,
+            "board port opened but no telemetry received (firmware/wiring?)",
+        )
+    expected = check.get("expected_firmware")
+    if expected is not None and str(snap.get("version")) != str(expected):
+        observed["expected_firmware"] = expected
+        return make_result(
+            check, WARNING, observed,
+            f"board responsive; firmware {snap.get('version')} != expected {expected}",
+        )
+    return make_result(check, PASS, observed, "board responded to telemetry")
+
+
+def check_rosmaster_imu(check: dict, ctx: dict) -> dict:
+    """Read the Yahboom onboard 9-axis IMU over serial (navigation sensor)."""
+    bot, snap, err = rosmaster_session(ctx, check)
+    if err:
+        return make_result(check, UNAVAILABLE, None, err)
+    if not snap.get("_responsive"):
+        return make_result(check, UNAVAILABLE, None, "board not responding over serial")
+    observed = {
+        "accel": snap.get("accel"),
+        "gyro": snap.get("gyro"),
+        "mag": snap.get("mag"),
+    }
+    if _any_nonzero(snap.get("accel") or []):
+        return make_result(check, PASS, observed, "onboard 9-axis IMU reporting")
+    return make_result(
+        check, WARNING, observed,
+        "board responds but IMU accel reads all-zero (chip/report issue)",
+    )
+
+
+def check_rosmaster_encoders(check: dict, ctx: dict) -> dict:
+    """Confirm the drive-motor encoder channels report over serial."""
+    bot, snap, err = rosmaster_session(ctx, check)
+    if err:
+        return make_result(check, UNAVAILABLE, None, err)
+    if not snap.get("_responsive"):
+        return make_result(check, UNAVAILABLE, None, "board not responding over serial")
+    encoders = snap.get("encoders")
+    expected = check.get("expected_count", 4)
+    if not isinstance(encoders, (list, tuple)):
+        return make_result(check, UNAVAILABLE, encoders, "encoder telemetry unavailable", expected)
+    observed = {"encoders": list(encoders), "count": len(encoders)}
+    if len(encoders) < int(expected):
+        return make_result(
+            check, UNEXPECTED, observed,
+            f"only {len(encoders)} encoder channels (< {expected})", expected,
+        )
+    return make_result(
+        check, PASS, observed,
+        f"{len(encoders)} encoder channels readable (spin wheels to confirm counts change)",
+        expected,
+    )
+
+
+def check_rosmaster_battery(check: dict, ctx: dict) -> dict:
+    """Read battery voltage from the Yahboom board (read-only)."""
+    bot, snap, err = rosmaster_session(ctx, check)
+    if err:
+        return make_result(check, UNAVAILABLE, None, err)
+    if not snap.get("_responsive"):
+        return make_result(check, UNAVAILABLE, None, "board not responding over serial")
+    voltage = snap.get("battery_v")
+    if not isinstance(voltage, (int, float)):
+        return make_result(check, UNAVAILABLE, voltage, "battery voltage unavailable")
+    observed = {"voltage": round(float(voltage), 2)}
+    min_v = check.get("min_voltage")
+    max_v = check.get("max_voltage")
+    if min_v is not None and float(voltage) < float(min_v):
+        return make_result(check, UNEXPECTED, observed, f"voltage {voltage:.2f}V below {min_v}V")
+    if max_v is not None and float(voltage) > float(max_v):
+        return make_result(check, UNEXPECTED, observed, f"voltage {voltage:.2f}V above {max_v}V")
+    return make_result(check, PASS, observed, f"battery {float(voltage):.2f}V")
+
+
+def _rplidar_query(port: str, request: int, timeout: int = 2) -> tuple[bytes | None, str | None]:
+    """Send a single read-only RPLIDAR request; keep the scan motor OFF."""
+    try:
+        import serial  # pyserial
+    except Exception as exc:
+        return None, f"pyserial not available: {exc}"
+    try:
+        ser = serial.Serial(port, 115200, timeout=timeout)
+    except Exception as exc:
+        return None, f"could not open {port}: {exc}"
+    try:
+        try:
+            ser.dtr = False  # DTR controls the A1 scan motor; keep it stopped
+        except Exception:
+            pass
+        ser.reset_input_buffer()
+        ser.write(bytes([0xA5, request & 0xFF]))
+        descriptor = ser.read(7)
+        if len(descriptor) < 7 or descriptor[0] != 0xA5 or descriptor[1] != 0x5A:
+            return None, "no/invalid response descriptor (device silent?)"
+        data_len = (
+            descriptor[2]
+            | (descriptor[3] << 8)
+            | (descriptor[4] << 16)
+            | ((descriptor[5] & 0x3F) << 24)
+        )
+        payload = ser.read(data_len)
+        if len(payload) < data_len:
+            return None, "truncated payload"
+        return payload, None
+    except Exception as exc:
+        return None, f"query failed: {exc}"
+    finally:
+        try:
+            ser.close()
+        except Exception:
+            pass
+
+
+def check_rplidar_health(check: dict, ctx: dict) -> dict:
+    """Confirm the RPLIDAR responds and report its HEALTH (read-only, no scan)."""
+    port = resolve_serial_port(check, ["10c4:ea60"])
+    if not port:
+        return make_result(check, MISSING, None, "RPLIDAR serial port not found (10c4:ea60)")
+
+    health, herr = _rplidar_query(port, 0x52)  # GET_HEALTH
+    if herr:
+        return make_result(check, UNAVAILABLE, {"port": port}, f"health query: {herr}")
+    status = health[0] if len(health) >= 1 else None
+    error_code = (health[1] | (health[2] << 8)) if len(health) >= 3 else None
+    status_name = {0: "good", 1: "warning", 2: "error"}.get(status, "unknown")
+    observed: dict[str, Any] = {
+        "port": port,
+        "health": {"status": status_name, "error_code": error_code},
+    }
+
+    info, ierr = _rplidar_query(port, 0x50)  # GET_INFO
+    if not ierr and info and len(info) >= 20:
+        observed["info"] = {
+            "model": info[0],
+            "firmware": f"{info[2]}.{info[1]}",
+            "hardware": info[3],
+            "serial": info[4:20].hex(),
+        }
+
+    if status == 0:
+        return make_result(check, PASS, observed, "RPLIDAR healthy")
+    if status == 1:
+        return make_result(check, WARNING, observed, f"RPLIDAR warning (code {error_code})")
+    if status == 2:
+        return make_result(check, UNEXPECTED, observed, f"RPLIDAR error state (code {error_code})")
+    return make_result(check, UNAVAILABLE, observed, "unrecognized health status")
+
+
+def check_gpio_input(check: dict, ctx: dict) -> dict:
+    """Read a single GPIO line level (e.g. the crash/bump switch).
+
+    A passive switch cannot be 'detected' when idle, so this only reports the
+    pin's current level once it is wired. If no numeric pin is configured the
+    check is NOT_TESTED, documenting intent without a false pass/fail.
+    """
+    pin = check.get("gpio_pin")
+    if not isinstance(pin, int):
+        return make_result(
+            check, NOT_TESTED, {"gpio_pin": pin},
+            "GPIO pin not yet wired/configured (passive switch is not auto-detectable)",
+        )
+    pull = str(check.get("pull", "none")).lower()
+    try:
+        import lgpio
+    except Exception as exc:
+        return make_result(check, UNAVAILABLE, {"gpio_pin": pin}, f"lgpio unavailable: {exc}")
+    handle = None
+    try:
+        handle = lgpio.gpiochip_open(0)
+        flags = 0
+        if pull == "up":
+            flags = getattr(lgpio, "SET_BIAS_PULL_UP", 0)
+        elif pull == "down":
+            flags = getattr(lgpio, "SET_BIAS_PULL_DOWN", 0)
+        elif pull == "none":
+            flags = getattr(lgpio, "SET_BIAS_DISABLE", 0)
+        lgpio.gpio_claim_input(handle, pin, flags)
+        level = lgpio.gpio_read(handle, pin)
+    except Exception as exc:
+        return make_result(check, UNAVAILABLE, {"gpio_pin": pin}, f"gpio read failed: {exc}")
+    finally:
+        if handle is not None:
+            try:
+                lgpio.gpiochip_free(handle)
+            except Exception:
+                pass
+    active_high = bool(check.get("active_high", True))
+    triggered = (level == 1) if active_high else (level == 0)
+    observed = {"gpio_pin": pin, "level": level, "pull": pull, "triggered": triggered}
+    return make_result(
+        check, PASS, observed,
+        f"pin {pin} readable (level={level}); presence of a passive switch not verifiable",
+    )
+
+
 CHECKS: dict[str, Callable[[dict, dict], dict]] = {
     "host_identity": check_host_identity,
     "usb_device": check_usb_device,
@@ -375,12 +761,36 @@ CHECKS: dict[str, Callable[[dict, dict], dict]] = {
     "command_available": check_command_available,
     "python_module": check_python_module,
     "file_present": check_file_present,
+    "disk_space": check_disk_space,
+    "host_throttling": check_host_throttling,
+    "rosmaster_board": check_rosmaster_board,
+    "rosmaster_imu": check_rosmaster_imu,
+    "rosmaster_encoders": check_rosmaster_encoders,
+    "rosmaster_battery": check_rosmaster_battery,
+    "rplidar_health": check_rplidar_health,
+    "gpio_input": check_gpio_input,
 }
 
 
 # --------------------------------------------------------------------------- #
 # Engine
 # --------------------------------------------------------------------------- #
+def release_hardware_sessions(ctx: dict) -> None:
+    """Close any active serial session opened by active checks."""
+    session = (ctx.get("_rosmaster") or {}).get("session")
+    if session is None:
+        return
+    try:
+        session.set_auto_report_state(False, forever=False)
+    except Exception:
+        pass
+    try:
+        if getattr(session, "ser", None) is not None:
+            session.ser.close()
+    except Exception:
+        pass
+
+
 def run_checks(config: dict, config_dir: Path) -> dict:
     probe = config.get("probe") or {}
     checks = probe.get("checks") or []
@@ -397,6 +807,8 @@ def run_checks(config: dict, config_dir: Path) -> dict:
             results.append(handler(check, ctx))
         except Exception as exc:  # a check must never crash the run
             results.append(make_result(check, ERROR, None, f"probe exception: {exc}"))
+
+    release_hardware_sessions(ctx)
 
     counts: dict[str, int] = {}
     required_failures = 0
