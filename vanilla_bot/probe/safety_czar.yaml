@@ -37,7 +37,7 @@ vehicle:
 
 hard_limits:
   # All sourced from robot_hardware.yaml measured_capabilities. Until those are
-  # bench-tested they are null and the Czar must refuse motion (fail-safe).
+  # bench-tested they remain provisional and the Czar must refuse motion.
   max_linear_velocity_mps: from_hardware_measured_capability   # pending_test
   max_angular_velocity_radps: from_hardware_measured_capability # pending_test
   min_actuation_velocity_mps: from_hardware_measured_capability # pending_test
@@ -72,6 +72,8 @@ sensor_policy:
     on_loss: stop                        # primary obstacle sensor
     max_staleness_ms: 250
     source_topic: /scan
+    health_topic: /sensors/rplidar/health
+    require_fresh_before_safety_activate: true
   camera_primary:
     role: navigation_critical
     on_loss: degrade                     # slow, do not necessarily stop
@@ -94,6 +96,13 @@ sensor_policy:
     provides: [linear_acceleration, tilt_roll_pitch]
     does_not_provide: [yaw, angular_velocity, heading]
     on_implausible_motion: degrade
+    max_staleness_ms: 100              # provisional acquisition-age budget
+    require_fresh_before_safety_activate: true
+    on_loss: degrade                   # explicit operator decision
+    loss_operating_profile: test_low_speed
+    # Czar must intersect this profile with the current envelope, never widen it.
+    on_recovery: restore_only_with_fresh_valid_evidence
+    health_topic: /sensors/adxl345/health
     note: >-
       Accelerometer-only, and deliberately NOT the navigation IMU. Chosen for
       failure independence: it keeps reporting impact/tip/motion-plausibility

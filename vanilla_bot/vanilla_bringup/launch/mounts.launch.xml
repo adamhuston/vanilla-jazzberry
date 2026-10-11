@@ -1,0 +1,19 @@
+<!-- Provisional geometry for tests ONLY. Replace XYZ/RPY before enabling on hardware. -->
+<launch>
+  <arg name="lidar_x" default="0.0"/>
+  <arg name="lidar_y" default="0.0"/>
+  <arg name="lidar_z" default="0.12"/>
+  <arg name="lidar_roll" default="0.0"/>
+  <arg name="lidar_pitch" default="0.0"/>
+  <arg name="lidar_yaw" default="0.0"/>
+  <arg name="accel_x" default="0.0"/>
+  <arg name="accel_y" default="0.0"/>
+  <arg name="accel_z" default="0.05"/>
+  <arg name="accel_roll" default="0.0"/>
+  <arg name="accel_pitch" default="0.0"/>
+  <arg name="accel_yaw" default="0.0"/>
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="lidar_mount" output="screen"
+    args="--frame-id base_link --child-frame-id lidar_link --x $(var lidar_x) --y $(var lidar_y) --z $(var lidar_z) --roll $(var lidar_roll) --pitch $(var lidar_pitch) --yaw $(var lidar_yaw)"/>
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="accel_mount" output="screen"
+    args="--frame-id base_link --child-frame-id safety_accel_link --x $(var accel_x) --y $(var accel_y) --z $(var accel_z) --roll $(var accel_roll) --pitch $(var accel_pitch) --yaw $(var accel_yaw)"/>
+</launch>

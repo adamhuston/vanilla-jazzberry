@@ -1,0 +1,35 @@
+# Robot wiring belongs here, not in the reusable Jazzy device plugins.
+# Acquisition-only: no actuator/brain is loaded and no movement is authorized.
+rov2_core:
+  ros__parameters:
+    loop_rate_hz: 20.0
+    use_sim_time: false
+    sensor_plugins:
+      - "rov2_sensors::Rplidar"
+      - "rov2_sensors::Adxl345"
+    # Omit actuator/brain overrides: CoreNode's typed defaults are empty.
+    # ROS parameter YAML cannot infer a type for [].
+    required_plugins:
+      - "rov2_sensors::Rplidar"
+      - "rov2_sensors::Adxl345"
+    rplidar:
+      device: "/dev/rplidar"  # install a unique udev symlink; do not rely on ttyUSB order
+      baud: 115200
+      topic: "/scan"
+      frame_id: "lidar_link"
+      health_topic: "/sensors/rplidar/health"
+      range_min_m: 0.15
+      range_max_m: 12.0
+      max_staleness_ms: 250.0
+    adxl345:
+      device: "/dev/i2c-3"  # software I2C, GPIO23 SDA / GPIO24 SCL
+      address: 83
+      topic: "/safety/accel"
+      frame_id: "safety_accel_link"
+      health_topic: "/sensors/adxl345/health"
+      range_g: 16
+      rate_hz: 100
+      max_staleness_ms: 100.0
+      bias_mps2: [0.0, 0.0, 0.0]  # provisional: replace after six-face calibration
+      scale: [1.0, 1.0, 1.0]      # provisional
+      acceleration_variance: 0.01 # provisional (m/s^2)^2; measure stationary noise

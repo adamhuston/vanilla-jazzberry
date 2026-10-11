@@ -1,0 +1,14 @@
+<launch>
+  <arg name="autostart" default="true"/>
+  <arg name="config" default="$(find-pkg-share vanilla_bringup)/config/sensors.yaml"/>
+  <arg name="mounts_verified" default="false"
+    description="Enable static TF only after replacing provisional mount measurements"/>
+  <arg name="mount_config" default="$(find-pkg-share vanilla_bringup)/launch/mounts.launch.xml"/>
+  <node pkg="rov2_core" exec="rov2_core_node" name="rov2_core" output="screen">
+    <param from="$(var config)"/>
+    <param name="autostart" value="$(var autostart)"/>
+  </node>
+  <group if="$(var mounts_verified)">
+    <include file="$(var mount_config)"/>
+  </group>
+</launch>

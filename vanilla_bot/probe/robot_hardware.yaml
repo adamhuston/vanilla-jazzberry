@@ -28,12 +28,16 @@ robot:
     steering: skid                  # differential; no steered axle
 
   geometry:
-    # Unmeasurable until the chassis is physically assembled. Do not invent.
-    wheel_radius_m: null            # pending_measurement
-    wheel_base_m: null              # pending_measurement (front-rear axle distance)
-    track_width_m: null             # pending_measurement (left-right wheel distance)
-    ground_clearance_m: null        # pending_measurement
-    mass_kg: null                   # pending_measurement
+    # PROVISIONAL best-guess values so the odometry/kinematics pipeline is
+    # testable before the chassis is bench-measured. bench_measured:false means
+    # the Safety Czar must still treat these as untrusted (fail-closed) until
+    # real measurements replace them and bench_measured is set true.
+    bench_measured: false             # <-- flip to true only after measuring ALL below
+    wheel_radius_m: 0.0325            # PROVISIONAL (~65 mm dia wheels); pending_measurement
+    wheel_base_m: 0.143              # PROVISIONAL (front-rear axle distance); pending_measurement
+    track_width_m: 0.167             # PROVISIONAL (left-right wheel distance); pending_measurement
+    ground_clearance_m: 0.03         # PROVISIONAL; pending_measurement
+    mass_kg: 1.5                     # PROVISIONAL; pending_measurement
 
 hardware:
   compute:
@@ -85,14 +89,19 @@ hardware:
       type: dc_gear_motor_with_encoder
       encoder:
         present: true
-        counts_per_rev: null          # pending_verification (needs datasheet/bench)
-        direction_convention: pending_verification
+        bench_measured: false         # PROVISIONAL values below; not yet verified
+        counts_per_rev: 1320          # PROVISIONAL best guess (encoder PPR x gear ratio); pending_verification
+        direction_convention: pending_verification   # sign per channel; confirm on bench
     measured_capabilities:
-      max_linear_speed_mps: null      # pending_test
-      max_angular_speed_radps: null   # pending_test
-      min_actuation_speed_mps: null   # pending_test (deadband)
-      braking_distance_m: null        # pending_test
-      braking_model: pending_test
+      # PROVISIONAL best-guess envelope so the Safety Czar has non-null numbers to
+      # reason about during development. bench_measured:false keeps them untrusted
+      # (motion must stay fail-safe) until measured on the real vehicle.
+      bench_measured: false
+      max_linear_speed_mps: 0.6       # PROVISIONAL; pending_test
+      max_angular_speed_radps: 3.0    # PROVISIONAL; pending_test
+      min_actuation_speed_mps: 0.03   # PROVISIONAL deadband; pending_test
+      braking_distance_m: 0.10        # PROVISIONAL; pending_test
+      braking_model: provisional_linear_decel   # pending_test
 
   sensors:
     lidar:
@@ -102,6 +111,7 @@ hardware:
       usb_bridge: cp2102              # CORRECTED: CP2102, not CH340
       usb_id: "10c4:ea60"
       device_hint: /dev/ttyUSB1
+      device_symlink: /dev/rplidar     # unique CP2102 udev rule required
       baud_datasheet: 115200
       datasheet_range_m: [0.15, 12.0]
       datasheet_scan_hz: 5.5          # adjustable ~2-10 Hz
@@ -111,6 +121,7 @@ hardware:
       ros:
         topic: /scan
         frame_id: lidar_link
+        mount_verified: false
         message_type: sensor_msgs/msg/LaserScan
 
     # SEPARATION OF CONCERN: two inertial sensors, deliberately not shared.
@@ -142,6 +153,8 @@ hardware:
       ros:
         topic: /safety/accel
         frame_id: safety_accel_link
+        mount_verified: false
+        calibration_verified: false
         message_type: sensor_msgs/msg/Imu
         # accel-only source: orientation_covariance[0] = -1 and
         # angular_velocity_covariance[0] = -1 by ROS convention.
